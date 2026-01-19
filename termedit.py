@@ -116,7 +116,7 @@ class AboutDialog(ModalScreen[None]):
         self.dismiss()
 
 
-class FileOpenDialog(ModalScreen[Path | None]):    
+class FileOpenDialog(ModalScreen[tuple[Path, str] | None]):    
     BINDINGS = [Binding("escape", "cancel", "取消")]
     
     def __init__(self, start_path: Path | None = None):
@@ -128,6 +128,11 @@ class FileOpenDialog(ModalScreen[Path | None]):
             Static("打开文件", id="dialog-title"),
             Input(value=str(self.start_path), id="path-input"),
             DirectoryTree(str(self.start_path), id="file-tree"),
+            Horizontal(
+                Label("编码: "),
+                Input(placeholder="留空自动检测(utf-8/gbk)", id="encoding-input"),
+                id="encoding-row"
+            ),
             Horizontal(
                 Button("打开", id="btn-open", variant="primary"),
                 Button("取消", id="btn-cancel", variant="default"),
@@ -145,7 +150,8 @@ class FileOpenDialog(ModalScreen[Path | None]):
             path = Path(event.value)
             if path.exists():
                 if path.is_file():
-                    self.dismiss(path)
+                    encoding = self.query_one("#encoding-input", Input).value.strip()
+                    self.dismiss((path, encoding))
                 else:
                     self._navigate_to(path)
             else:
@@ -162,23 +168,25 @@ class FileOpenDialog(ModalScreen[Path | None]):
             self.notify(f"无法导航: {e}", severity="error")
     
     def on_directory_tree_file_selected(self, event: DirectoryTree.FileSelected) -> None:
-        self.dismiss(event.path)
+        encoding = self.query_one("#encoding-input", Input).value.strip()
+        self.dismiss((event.path, encoding))
     
     def on_directory_tree_directory_selected(self, event: DirectoryTree.DirectorySelected) -> None:
         self.query_one("#path-input", Input).value = str(event.path)
     
     def on_button_pressed(self, event: Button.Pressed) -> None:
         if event.button.id == "btn-open":
+            encoding = self.query_one("#encoding-input", Input).value.strip()
             path_input = self.query_one("#path-input", Input).value
             path = Path(path_input)
             if path.exists() and path.is_file():
-                self.dismiss(path)
+                self.dismiss((path, encoding))
                 return
             tree = self.query_one("#file-tree", DirectoryTree)
             if tree.cursor_node and tree.cursor_node.data:
                 path = tree.cursor_node.data.path
                 if path.is_file():
-                    self.dismiss(path)
+                    self.dismiss((path, encoding))
                 else:
                     self.notify("请选择一个文件", severity="warning")
             else:
@@ -479,6 +487,23 @@ class TermEdit(App):
         width: 1fr;
     }
     
+    #encoding-row {
+        width: 100%;
+        height: 3;
+        padding: 0;
+        margin-bottom: 1;
+    }
+    
+    #encoding-row > Label {
+        width: auto;
+        padding: 1 0;
+        color: #cccccc;
+    }
+    
+    #encoding-row > Input {
+        width: 1fr;
+    }
+    
     #about-dialog {
         width: 45;
         height: auto;
@@ -567,15 +592,27 @@ class TermEdit(App):
             name = "[未命名]" + (" *" if self.modified else "")
         self.query_one("#st-file", Static).update(name)
     
-    def _load_file(self, path: Path) -> None:
+    def _load_file(self, path: Path, encoding: str = "") -> None:
         try:
-            content = path.read_text(encoding="utf-8")
+            # 如果指定了编码，使用指定的编码
+            if encoding:
+                content = path.read_text(encoding=encoding)
+                used_encoding = encoding
+            else:
+                # 尝试使用 utf-8，失败则尝试 gbk
+                try:
+                    content = path.read_text(encoding="utf-8")
+                    used_encoding = "utf-8"
+                except UnicodeDecodeError:
+                    content = path.read_text(encoding="gbk")
+                    used_encoding = "gbk"
+            
             editor = self.query_one("#editor", TextArea)
             editor.text = content
             self.current_file = path
             self.modified = False
             self._update_status()
-            self.notify(f"已打开: {path.name}")
+            self.notify(f"已打开: {path.name} (编码: {used_encoding})")
         except Exception as e:
             self.notify(f"无法打开: {e}", severity="error")
     
@@ -686,9 +723,10 @@ class TermEdit(App):
         def do_open():
             start = self.current_file.parent if self.current_file else Path.cwd()
             
-            def handle_path(path: Path | None) -> None:
-                if path:
-                    self._load_file(path)
+            def handle_path(result: tuple[Path, str] | None) -> None:
+                if result:
+                    path, encoding = result
+                    self._load_file(path, encoding)
             
             self.push_screen(FileOpenDialog(start), handle_path)
         
